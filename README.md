@@ -53,25 +53,6 @@ frozen = jtu.tree_map(
 )
 ```
 
-The library is intentionally small: it only builds and combines masks.
-
 ## Example notebook
 
 See `docs/notebooks/equinox_optax_demo.ipynb` for a small Equinox MLP example that uses `maskx` to train only selected parameters with Optax.
-
-## Release
-
-Build and validate locally:
-
-```bash
-python -m build
-python -m twine check dist/*
-```
-
-Manual upload:
-
-```bash
-uv run --active twine upload dist/*
-```
-
-GitHub Actions can also publish via trusted publishing using `.github/workflows/publish.yml` once PyPI is configured to trust this repository.
