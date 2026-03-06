@@ -25,6 +25,17 @@ Selectors can be based on `target`, `path_prefix`, `path_in`, `leaf_type`, `shap
 
 Mask operators: `|`, `&`, `^`, `+`, `-`, `~`
 
+<<<<<<< HEAD
+=======
+## Install
+
+Requires Python 3.10 or newer.
+
+```bash
+pip install maskx
+```
+
+>>>>>>> c804a833c72f66054c74d1d5f9dab8f425c295a1
 Works with Optax:
 
 ```python
