@@ -1,5 +1,10 @@
 # maskx
 
+
+```bash
+pip install maskx
+```
+
 Mask algebra for selecting and combining JAX PyTree leaves.
 
 `maskx` builds `Mask` objects from PyTree leaves and supports selection by path, type, shape, dtype, ndim, exact path membership, and custom predicates.
@@ -19,12 +24,6 @@ count = mask.count()
 Selectors can be based on `target`, `path_prefix`, `path_in`, `leaf_type`, `shape`, `dtype`, and `ndim`.
 
 Mask operators: `|`, `&`, `^`, `+`, `-`, `~`
-
-## Install
-
-```bash
-pip install maskx
-```
 
 Works with Optax:
 
