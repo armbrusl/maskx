@@ -1,8 +1,8 @@
 # maskx
 
-Minimal path-based masking for JAX PyTrees.
+Mask algebra for selecting and combining JAX PyTree leaves.
 
-`maskx` builds `Mask` objects from pytree paths and simple mask algebra.
+`maskx` builds `Mask` objects from PyTree leaves and supports selection by path, type, shape, dtype, ndim, exact path membership, and custom predicates.
 
 ```python
 import jax
@@ -19,6 +19,12 @@ count = mask.count()
 Selectors can be based on `target`, `path_prefix`, `path_in`, `leaf_type`, `shape`, `dtype`, and `ndim`.
 
 Mask operators: `|`, `&`, `^`, `+`, `-`, `~`
+
+## Install
+
+```bash
+pip install maskx
+```
 
 Works with Optax:
 
@@ -49,3 +55,24 @@ frozen = jtu.tree_map(
 ```
 
 The library is intentionally small: it only builds and combines masks.
+
+## Example notebook
+
+See `docs/notebooks/equinox_optax_demo.ipynb` for a small Equinox MLP example that uses `maskx` to train only selected parameters with Optax.
+
+## Release
+
+Build and validate locally:
+
+```bash
+python -m build
+python -m twine check dist/*
+```
+
+Manual upload:
+
+```bash
+uv run --active twine upload dist/*
+```
+
+GitHub Actions can also publish via trusted publishing using `.github/workflows/publish.yml` once PyPI is configured to trust this repository.
