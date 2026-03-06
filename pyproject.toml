@@ -1,6 +1,6 @@
 [project]
 name = "maskx"
-version = "0.1.0"
+version = "0.1.1"
 description = "Mask algebra for selecting and combining JAX PyTree leaves."
 readme = "README.md"
 requires-python = ">=3.10"
