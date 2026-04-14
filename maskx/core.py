@@ -86,8 +86,7 @@ class Mask:
         """Apply *fn* to selected leaves and *default* to the rest."""
         leaves, treedef = jax.tree_util.tree_flatten(tree)
         new_leaves = [
-            fn(leaf) if sel else default(leaf)
-            for leaf, sel in zip(leaves, self._flat)
+            fn(leaf) if sel else default(leaf) for leaf, sel in zip(leaves, self._flat)
         ]
         return treedef.unflatten(new_leaves)
 
@@ -100,9 +99,7 @@ class Mask:
 
     def _check_compat(self, other: Mask) -> None:
         if self._treedef != other._treedef:
-            raise ValueError(
-                "Cannot combine masks from differently structured pytrees"
-            )
+            raise ValueError("Cannot combine masks from differently structured pytrees")
 
     def __or__(self, other: Any) -> Mask:
         other = self._coerce(other)
@@ -264,9 +261,7 @@ def combine_masks(*masks: Any, op: str = "or") -> Mask:
 
     for m in resolved[1:]:
         if m._treedef != treedef:
-            raise ValueError(
-                "Cannot combine masks from differently structured pytrees"
-            )
+            raise ValueError("Cannot combine masks from differently structured pytrees")
 
     if op not in ("or", "and", "xor"):
         raise ValueError("op must be one of: 'or', 'and', 'xor'")
