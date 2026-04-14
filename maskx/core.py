@@ -1,29 +1,67 @@
 from __future__ import annotations
 
 import re
+import warnings
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
 from typing import Any
 
 import jax
+import numpy as np
 
 PathPredicate = Callable[[str, Any], bool]
 LeafType = type[Any] | tuple[type[Any], ...] | Callable[[Any], bool]
 
 
-def _mask_tree(tree: Any) -> Any:
-    return tree.tree if isinstance(tree, Mask) else tree
-
-
-@dataclass(frozen=True)
 class Mask:
-    """Boolean mask pytree with mask algebra operators."""
+    """Boolean mask over pytree leaves backed by a flat NumPy bool array.
 
-    tree: Any
+    Algebra operators (``|``, ``&``, ``^``, ``+``, ``-``, ``~``) execute as
+    vectorised NumPy operations on the flat array, avoiding per-leaf Python
+    overhead.  The full boolean pytree is only materialised when ``.tree`` is
+    accessed.
+    """
+
+    __slots__ = ("_treedef", "_flat")
+
+    def __init__(self, tree: Any) -> None:
+        leaves_with_paths, treedef = jax.tree_util.tree_flatten_with_path(tree)
+        flat = np.array([bool(leaf) for _, leaf in leaves_with_paths], dtype=np.bool_)
+        object.__setattr__(self, "_treedef", treedef)
+        object.__setattr__(self, "_flat", flat)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise AttributeError("Mask objects are immutable")
+
+    def __delattr__(self, name: str) -> None:
+        raise AttributeError("Mask objects are immutable")
+
+    @classmethod
+    def _from_flat(cls, treedef: Any, flat: np.ndarray) -> Mask:
+        obj = object.__new__(cls)
+        object.__setattr__(obj, "_treedef", treedef)
+        object.__setattr__(obj, "_flat", flat)
+        return obj
+
+    # -- properties ----------------------------------------------------------
+
+    @property
+    def tree(self) -> Any:
+        """Reconstruct the boolean pytree (materialised on each access)."""
+        return self._treedef.unflatten(self._flat.tolist())
+
+    # -- query ---------------------------------------------------------------
+
+    def _all_paths(self) -> list[str]:
+        dummy = self._treedef.unflatten(self._flat.tolist())
+        return [
+            _path_to_string(p)
+            for p, _ in jax.tree_util.tree_flatten_with_path(dummy)[0]
+        ]
 
     def paths(self) -> list[str]:
         """Return the paths of all selected leaves."""
-        return [path for path, selected in leaf_paths(self.tree) if bool(selected)]
+        all_p = self._all_paths()
+        return [all_p[i] for i in np.flatnonzero(self._flat)]
 
     def matches(self) -> list[str]:
         """Alias for :meth:`paths`."""
@@ -31,32 +69,72 @@ class Mask:
 
     def count(self) -> int:
         """Return the number of selected leaves."""
-        return len(self.paths())
+        return int(np.count_nonzero(self._flat))
 
-    def __or__(self, other: Any) -> "Mask":
-        return combine_masks(self, other, op="or")
+    def summary(self) -> str:
+        """Short description, e.g. ``'12/348 leaves selected'``."""
+        return f"{np.count_nonzero(self._flat)}/{len(self._flat)} leaves selected"
 
-    def __and__(self, other: Any) -> "Mask":
-        return combine_masks(self, other, op="and")
+    # -- transform -----------------------------------------------------------
 
-    def __xor__(self, other: Any) -> "Mask":
-        return combine_masks(self, other, op="xor")
+    def apply(
+        self,
+        tree: Any,
+        fn: Callable[[Any], Any],
+        default: Callable[[Any], Any] = lambda x: x,
+    ) -> Any:
+        """Apply *fn* to selected leaves and *default* to the rest."""
+        leaves, treedef = jax.tree_util.tree_flatten(tree)
+        new_leaves = [
+            fn(leaf) if sel else default(leaf)
+            for leaf, sel in zip(leaves, self._flat)
+        ]
+        return treedef.unflatten(new_leaves)
 
-    def __add__(self, other: Any) -> "Mask":
+    # -- algebra -------------------------------------------------------------
+
+    def _coerce(self, other: Any) -> Mask:
+        if isinstance(other, Mask):
+            return other
+        return Mask(other)
+
+    def _check_compat(self, other: Mask) -> None:
+        if self._treedef != other._treedef:
+            raise ValueError(
+                "Cannot combine masks from differently structured pytrees"
+            )
+
+    def __or__(self, other: Any) -> Mask:
+        other = self._coerce(other)
+        self._check_compat(other)
+        return Mask._from_flat(self._treedef, self._flat | other._flat)
+
+    def __and__(self, other: Any) -> Mask:
+        other = self._coerce(other)
+        self._check_compat(other)
+        return Mask._from_flat(self._treedef, self._flat & other._flat)
+
+    def __xor__(self, other: Any) -> Mask:
+        other = self._coerce(other)
+        self._check_compat(other)
+        return Mask._from_flat(self._treedef, self._flat ^ other._flat)
+
+    def __add__(self, other: Any) -> Mask:
         return self | other
 
-    def __sub__(self, other: Any) -> "Mask":
-        other_tree = _mask_tree(other)
-        return Mask(
-            jax.tree_util.tree_map(
-                lambda left, right: bool(left) and not bool(right),
-                self.tree,
-                other_tree,
-            )
-        )
+    def __sub__(self, other: Any) -> Mask:
+        other = self._coerce(other)
+        self._check_compat(other)
+        return Mask._from_flat(self._treedef, self._flat & ~other._flat)
 
-    def __invert__(self) -> "Mask":
-        return Mask(jax.tree_util.tree_map(lambda value: not bool(value), self.tree))
+    def __invert__(self) -> Mask:
+        return Mask._from_flat(self._treedef, ~self._flat)
+
+    def __repr__(self) -> str:
+        return f"Mask({self.summary()})"
+
+
+# -- helpers -----------------------------------------------------------------
 
 
 def _key_str(key: Any) -> str:
@@ -87,7 +165,9 @@ def _matches_leaf_type(leaf: Any, leaf_type: LeafType | None) -> bool:
 
 def leaf_paths(tree: Any) -> list[tuple[str, Any]]:
     """Return all leaf paths in a pytree as slash-joined strings."""
-    leaves_with_paths, _ = jax.tree_util.tree_flatten_with_path(_mask_tree(tree))
+    if isinstance(tree, Mask):
+        tree = tree.tree
+    leaves_with_paths, _ = jax.tree_util.tree_flatten_with_path(tree)
     return [(_path_to_string(path), leaf) for path, leaf in leaves_with_paths]
 
 
@@ -103,7 +183,7 @@ def select(
     path_prefix: str | Sequence[str] | None = None,
     path_in: Sequence[str] | None = None,
 ) -> Mask:
-    """Build a boolean mask pytree matching leaves selected by path or predicate.
+    """Build a boolean mask selecting pytree leaves by path or predicate.
 
     Args:
         tree: Input pytree.
@@ -136,44 +216,42 @@ def select(
     prefixes = (
         (path_prefix,) if isinstance(path_prefix, str) else tuple(path_prefix or ())
     )
-    paths = set(path_in or ())
+    paths_set = set(path_in or ())
     leaves_with_paths, treedef = jax.tree_util.tree_flatten_with_path(tree)
-    mask_leaves = []
+    n = len(leaves_with_paths)
+    flat = np.zeros(n, dtype=np.bool_)
 
-    for path, leaf in leaves_with_paths:
+    for i, (path, leaf) in enumerate(leaves_with_paths):
         path_str = _path_to_string(path)
 
         if not _matches_leaf_type(leaf, leaf_type):
-            mask_leaves.append(False)
             continue
 
         if shape is not None and getattr(leaf, "shape", None) != shape:
-            mask_leaves.append(False)
             continue
 
         if dtype is not None and getattr(leaf, "dtype", None) != dtype:
-            mask_leaves.append(False)
             continue
 
         if ndim is not None and getattr(leaf, "ndim", None) != ndim:
-            mask_leaves.append(False)
             continue
 
-        if matcher is None and where is None and not prefixes and not paths:
-            mask_leaves.append(True)
+        if matcher is None and where is None and not prefixes and not paths_set:
+            flat[i] = True
             continue
 
-        matched_target = (
-            matcher.search(path_str) is not None if matcher is not None else False
-        )
-        matched_where = where(path_str, leaf) if where is not None else False
-        matched_prefix = any(path_str.startswith(prefix) for prefix in prefixes)
-        matched_path_in = path_str in paths
-        mask_leaves.append(
-            bool(matched_target or matched_where or matched_prefix or matched_path_in)
-        )
+        if (
+            (matcher is not None and matcher.search(path_str) is not None)
+            or (where is not None and where(path_str, leaf))
+            or any(path_str.startswith(prefix) for prefix in prefixes)
+            or path_str in paths_set
+        ):
+            flat[i] = True
 
-    return Mask(jax.tree_util.tree_unflatten(treedef, mask_leaves))
+    if not np.any(flat):
+        warnings.warn("select() matched zero leaves", stacklevel=2)
+
+    return Mask._from_flat(treedef, flat)
 
 
 def combine_masks(*masks: Any, op: str = "or") -> Mask:
@@ -181,24 +259,21 @@ def combine_masks(*masks: Any, op: str = "or") -> Mask:
     if not masks:
         raise ValueError("combine_masks requires at least one mask")
 
-    mask_trees = [_mask_tree(mask) for mask in masks]
+    resolved = [m if isinstance(m, Mask) else Mask(m) for m in masks]
+    treedef = resolved[0]._treedef
 
-    if op == "or":
+    for m in resolved[1:]:
+        if m._treedef != treedef:
+            raise ValueError(
+                "Cannot combine masks from differently structured pytrees"
+            )
 
-        def fn(*values: Any) -> bool:
-            return any(bool(v) for v in values)
-
-    elif op == "and":
-
-        def fn(*values: Any) -> bool:
-            return all(bool(v) for v in values)
-
-    elif op == "xor":
-
-        def fn(*values: Any) -> bool:
-            return sum(bool(v) for v in values) % 2 == 1
-
-    else:
+    if op not in ("or", "and", "xor"):
         raise ValueError("op must be one of: 'or', 'and', 'xor'")
 
-    return Mask(jax.tree_util.tree_map(fn, *mask_trees))
+    np_op = {"or": np.bitwise_or, "and": np.bitwise_and, "xor": np.bitwise_xor}[op]
+    result = resolved[0]._flat.copy()
+    for m in resolved[1:]:
+        np_op(result, m._flat, out=result)
+
+    return Mask._from_flat(treedef, result)

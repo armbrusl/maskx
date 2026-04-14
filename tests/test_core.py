@@ -1,3 +1,5 @@
+import warnings
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -157,12 +159,62 @@ def test_select_supports_ndim_filter():
     assert set(mask.paths()) == {"encoder/bias", "decoder/bias"}
 
 
-def test_select_supports_leaf_type_predicate():
+def test_summary_reports_selected_over_total():
     model = make_model()
-    mask = maskx.select(
-        model,
-        leaf_type=lambda leaf: hasattr(leaf, "dtype") and leaf.dtype == jnp.float32,
-        shape=(2,),
-    )
+    mask = maskx.select(model, target=r".*bias", leaf_type=jax.Array)
 
-    assert set(mask.paths()) == {"encoder/bias", "decoder/bias"}
+    assert mask.summary() == "2/5 leaves selected"
+
+
+def test_repr_contains_summary():
+    model = make_model()
+    mask = maskx.select(model, target=r".*bias", leaf_type=jax.Array)
+
+    assert repr(mask) == "Mask(2/5 leaves selected)"
+
+
+def test_apply_transforms_selected_leaves():
+    model = make_model()
+    mask = maskx.select(model, target=r".*bias", leaf_type=jax.Array)
+
+    result = mask.apply(model, lambda x: x * 0)
+
+    assert jnp.allclose(result.encoder.bias, jnp.zeros((2,)))
+    assert jnp.allclose(result.decoder.bias, jnp.zeros((2,)))
+    assert jnp.allclose(result.encoder.weight, model.encoder.weight)
+
+
+def test_select_warns_on_zero_matches():
+    model = make_model()
+
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        mask = maskx.select(model, target=r"nonexistent_path")
+        assert len(w) == 1
+        assert "zero leaves" in str(w[0].message)
+    assert mask.count() == 0
+
+
+def test_combine_masks_rejects_different_structures():
+    model_a = make_model()
+    model_b = Block(weight=jnp.ones((2, 2)), bias=jnp.zeros((2,)))
+
+    mask_a = maskx.select(model_a, leaf_type=jax.Array)
+    mask_b = maskx.select(model_b, leaf_type=jax.Array)
+
+    try:
+        mask_a & mask_b
+        assert False, "Expected ValueError"
+    except ValueError as e:
+        assert "differently structured" in str(e)
+
+
+def test_mask_is_immutable():
+    model = make_model()
+    mask = maskx.select(model, leaf_type=jax.Array)
+
+    try:
+        mask._flat = None
+        assert False, "Expected AttributeError"
+    except AttributeError:
+        pass
